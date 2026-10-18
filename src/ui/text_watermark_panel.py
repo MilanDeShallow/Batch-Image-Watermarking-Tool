@@ -274,14 +274,19 @@ class TextWatermarkPanel(ctk.CTkFrame):
         self._spacing_y_entry.bind("<KeyRelease>", lambda e: self._notify_change())
         theme.bind_focus_ring(self._spacing_y_entry)
 
+        # 错位单独一行：和两个间距输入框挤在同一行时，右边只剩几十像素，
+        # 右栏稍窄就被压掉（用户截图里"水平间距 100 垂直间距 100 □错位"整排很挤）
+        stagger_row = ctk.CTkFrame(self, fg_color="transparent")
+        stagger_row.pack(fill="x", padx=10, pady=(2, 2))
+
         self._stagger_var = ctk.BooleanVar(value=True)
         self._stagger_cb = ctk.CTkCheckBox(
-            tile_params_frame,
+            stagger_row,
             text="错位",
             variable=self._stagger_var,
             command=self._notify_change,
         )
-        self._stagger_cb.pack(side="left", padx=10)
+        self._stagger_cb.pack(anchor="w")
 
         # 用 trace_add 监听变量变化（覆盖粘贴/程序设值，比 KeyRelease 更可靠）
         _trace_cb = lambda *_: self._notify_change()

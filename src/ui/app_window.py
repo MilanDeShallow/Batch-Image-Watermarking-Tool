@@ -438,7 +438,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
         paned_bg = theme.BG
         self._vpaned = tk.PanedWindow(
             self, orient="vertical",
-            sashwidth=6, sashrelief="flat",
+            sashwidth=5, sashrelief="flat",
             bg=paned_bg, bd=0,
         )
         self._vpaned.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -446,7 +446,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
         # ====== 水平 PanedWindow：左 | 中 | 右 ======
         self._hpaned = tk.PanedWindow(
             self._vpaned, orient="horizontal",
-            sashwidth=6, sashrelief="flat",
+            sashwidth=5, sashrelief="flat",
             bg=paned_bg, bd=0,
         )
         self._vpaned.add(self._hpaned, minsize=200, stretch="always")
@@ -510,7 +510,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
             on_page_changed=self._on_preview_page_changed,
             on_watermark_moved=self._on_watermark_moved,
         )
-        self._preview_canvas.pack(fill="both", expand=True, padx=4, pady=8)
+        self._preview_canvas.pack(fill="both", expand=True, padx=3, pady=8)
 
         # ---- 右栏：水印设置区 ----
         right_frame = ctk.CTkFrame(self._hpaned)
@@ -1024,6 +1024,20 @@ class AppWindow(ctk.CTk, DnDWrapper):
         for index, btn in enumerate(self._file_btn_order):
             btn.grid(row=index // cols, column=index % cols, sticky=sticky, padx=2, pady=2)
 
+    def _px(self, logical: float) -> int:
+        """逻辑像素 → Tk 像素。本机 150% 缩放时 1 逻辑 = 1.5 物理。
+
+        `winfo_width()` / `sash_place()` 走的是物理像素，而 MIN_LEFT 这组常量
+        是按控件 reqwidth 量的逻辑值。不换算的话，150% 缩放下左栏下限只有
+        应有值的三分之二 —— 表现就是"拖到最窄，文件名和提示语被截"。
+        `winfo_fpixels('1i')/96` 在本机返回 1.0（Tk 自报 96 DPI，靠不住），
+        所以用项目里现成的 ScalingTracker 口径。
+        """
+        try:
+            return int(round(logical * _tk_units_scale(self)))
+        except Exception:
+            return int(round(logical))
+
     def _apply_layout(self, layout: dict):
         """按比例设置分隔线位置"""
         try:
@@ -1043,9 +1057,12 @@ class AppWindow(ctk.CTk, DnDWrapper):
             right_ratio = max(0.05, 1.0 - left_ratio - center_ratio)
             sash_w = int(self._hpaned.cget("sashwidth"))
 
-            left_w = min(max(int(total_w * left_ratio), MIN_LEFT), MAX_LEFT)
-            right_w = min(max(int(total_w * right_ratio), MIN_RIGHT), MAX_RIGHT)
-            center_w = max(MIN_CENTER, total_w - left_w - right_w - 2 * sash_w)
+            left_w = min(max(int(total_w * left_ratio), self._px(MIN_LEFT)),
+                         self._px(MAX_LEFT))
+            right_w = min(max(int(total_w * right_ratio), self._px(MIN_RIGHT)),
+                          self._px(MAX_RIGHT))
+            center_w = max(self._px(MIN_CENTER),
+                           total_w - left_w - right_w - 2 * sash_w)
 
             if len(self._hpaned.panes()) >= 2:
                 self._hpaned.sash_place(0, left_w, 0)
