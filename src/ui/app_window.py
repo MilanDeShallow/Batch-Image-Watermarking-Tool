@@ -294,7 +294,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
         self.TkdndVersion = TkinterDnD._require(self)
 
         # 窗口基本配置
-        self.title(f"{APP_NAME} — 批量图片水印工具")
+        self.title(APP_NAME)
         self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
         self.minsize(950, 620)
 

@@ -90,7 +90,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='批量图片水印工具',
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

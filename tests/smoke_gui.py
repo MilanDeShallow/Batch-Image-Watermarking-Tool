@@ -948,12 +948,14 @@ def main():
         f"实际 {_tb!r}",
     )
 
-    # 品牌名接线：窗口标题必须是「APP_NAME — 批量图片水印工具」
+    # 品牌名接线：窗口标题就是软件名本身。
+    # 以前是「APP_NAME — 批量图片水印工具」，但产品已覆盖 PDF 与视频，
+    # 那个后缀既不准确、又在标题栏占掉一半宽度，v1.7.3 起只留软件名。
     from src import APP_NAME
 
     check(
-        "窗口标题带品牌名",
-        APP_NAME in app.title(),
+        "窗口标题就是软件名",
+        app.title() == APP_NAME,
         app.title(),
     )
 

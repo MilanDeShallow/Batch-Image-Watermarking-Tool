@@ -28,9 +28,15 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
+# 品牌名与版本号的唯一来源是 src/__init__.py。产物名必须跟着它走 ——
+# 以前这里写死了一份「批量图片水印工具」，改名时很容易漏掉这一处，
+# 结果打成"程序里叫万物可印、exe 却还叫旧名"的包。
+sys.path.insert(0, str(ROOT))
+from src import APP_NAME, __version__  # noqa: E402
+
 DIST = ROOT / "dist" / "WatermarkTool"
 ARCHIVE = ROOT / "dist" / "_archive"
-EXE_NAME = "批量图片水印工具.exe"
+EXE_NAME = f"{APP_NAME}.exe"
 
 # psutil 也在检查列表里：它缺失不影响启动（available_memory_bytes 会回落到
 # 2GB 保守预算），但会让并行度决策永远按兜底值算，而界面上完全看不出来 ——
@@ -146,12 +152,8 @@ def make_dist_zip(app_name: str, version: str, exe: Path) -> Path | None:
 
 
 def main() -> int:
-    # 软件名与版本号只有一处定义（src/__init__.py），横幅也从那里取 ——
-    # 否则改名/改版本时日志与产物会对不上，还得靠人记得改两处
-    from src import APP_NAME, __version__
-
     print("=" * 52)
-    print(f"  {APP_NAME} - 批量图片水印工具 打包")
+    print(f"  {APP_NAME} v{__version__} 打包")
     print("=" * 52)
 
     if not check_deps():

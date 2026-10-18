@@ -305,7 +305,7 @@ class MergeCancelled(Exception):
 # ============================================================
 
 # 产出工具标识（写进输出 PDF 的 /Producer）
-APP_PRODUCER = f"{APP_NAME} — 批量图片水印工具"
+APP_PRODUCER = APP_NAME
 
 # 原文档元数据里应当原样带走的键
 _PRESERVED_META_KEYS = ("/Title", "/Author", "/Subject", "/Keywords", "/Creator")
