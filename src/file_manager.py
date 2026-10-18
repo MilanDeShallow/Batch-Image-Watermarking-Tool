@@ -171,6 +171,11 @@ def generate_output_path(
             out_ext = ".jpg"
         elif out_ext == ".tif":
             out_ext = ".tiff"
+        elif out_ext == ".svg":
+            # SVG 是矢量：水印是像素运算，加完没法写回矢量路径。
+            # "保留原格式"对它只能退化成 PNG（无损、保留透明），
+            # 用 .png 而不是 .jpg 是因为 SVG 常有透明背景。
+            out_ext = ".png"
         else:
             out_ext = src_ext  # 保持原扩展名
     elif output_format == "jpeg":

@@ -19,7 +19,12 @@ import pytest
 from PIL import Image, ImageChops
 
 from src.batch_planner import FORMAT_ALIASES, VALID_FORMATS, normalize_format
-from src.config import EXPORT_FORMATS, SUPPORTED_EXTENSIONS, WatermarkConfig
+from src.config import (
+    EXPORT_FORMATS,
+    SUPPORTED_EXTENSIONS,
+    SVG_RASTER_LONG_EDGE,
+    WatermarkConfig,
+)
 from src.file_manager import generate_output_path, is_image_file
 from src.watermark_engine import (
     HEIF_AVAILABLE,
@@ -360,7 +365,9 @@ class TestFormatNormalization:
     def test_normalize_new_formats(self, written, expected):
         assert normalize_format(written) == expected
 
-    @pytest.mark.parametrize("bogus", ["", "随便什么", "AVIF", None])
+    # 注意：AVIF / JP2 / SVG 都已是合法格式，不能再拿来当"未知值"。
+    # BMP 是输入格式但不可导出，用来验证"认得出扩展名但选不了导出格式"
+    @pytest.mark.parametrize("bogus", ["", "随便什么", "BMP", None])
     def test_unknown_falls_back_to_auto(self, bogus):
         assert normalize_format(bogus) == "auto"
 
@@ -462,3 +469,162 @@ class TestOutputPathExtension:
         )
         assert path is not None
         assert path.endswith(expected)
+
+# ============================================================
+# v1.7.4：AVIF / JPEG 2000 / ICO / SVG
+# ============================================================
+
+SVG_SMALL = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">'
+    '<rect width="64" height="64" rx="12" fill="#264653"/>'
+    '<circle cx="32" cy="32" r="18" fill="#e9c46a"/></svg>'
+)
+
+
+def _write_svg(path, content: str = SVG_SMALL) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+class TestSvgRasterization:
+    """SVG 不是位图：必须先光栅化，且不能按 64x64 的原始逻辑尺寸草草了事"""
+
+    def test_small_svg_is_scaled_up_to_target(self, tmp_path):
+        path = str(tmp_path / "icon.svg")
+        _write_svg(path)
+        img = safe_open_image(path)
+
+        assert img.mode == "RGBA"
+        # 64x64 直接光栅化的话，水印字号按短边 5% 算只有 3 像素高，
+        # 糊成一团；这里必须被放大到目标长边
+        assert max(img.size) == SVG_RASTER_LONG_EDGE
+        assert img.size == (SVG_RASTER_LONG_EDGE, SVG_RASTER_LONG_EDGE)
+
+    def test_large_svg_is_not_downscaled(self, tmp_path):
+        path = str(tmp_path / "big.svg")
+        _write_svg(
+            path,
+            '<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1200">'
+            '<rect width="2400" height="1200" fill="#333"/></svg>',
+        )
+        img = safe_open_image(path)
+        # 比目标还大的矢量图本身分辨率够用，缩小只会白丢细节
+        assert img.size == (2400, 1200)
+
+    def test_svg_keeps_transparency(self, tmp_path):
+        path = str(tmp_path / "alpha.svg")
+        _write_svg(
+            path,
+            '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">'
+            '<circle cx="100" cy="100" r="60" fill="#2a9d8f"/></svg>',
+        )
+        img = safe_open_image(path).convert("RGBA")
+        assert img.getpixel((2, 2))[3] == 0
+
+    def test_watermark_lands_on_svg(self, tmp_path):
+        path = str(tmp_path / "icon.svg")
+        _write_svg(path)
+        img = safe_open_image(path)
+        cfg = WatermarkConfig(text="万物可印", opacity=100,
+                              position="bottom-right", font_ratio=0.05)
+        out = apply_watermark(img, cfg, 1.0)
+
+        w, h = out.size
+        region = out.convert("RGB").crop((int(w * 0.55), int(h * 0.88), w, h))
+        bright = sum(1 for px in region.get_flattened_data() if sum(px) > 600)
+        assert bright > 50, "SVG 光栅化后水印没画上去"
+
+    def test_broken_svg_raises_with_filename(self, tmp_path):
+        path = str(tmp_path / "bad.svg")
+        _write_svg(path, "<svg><this is not valid")
+        with pytest.raises(ValueError) as exc:
+            safe_open_image(path)
+        assert "bad.svg" in str(exc.value)
+
+    def test_svg_auto_output_becomes_png(self, tmp_path):
+        # 矢量图加水印后存不回矢量路径，auto 必须落到 PNG 而不是原扩展名
+        out = generate_output_path(
+            str(tmp_path / "logo.svg"),
+            str(tmp_path / "out"),
+            output_format="auto",
+        )
+        assert out is not None
+        assert out.endswith(".png")
+
+
+class TestNewRasterFormats:
+    """AVIF / JPEG 2000 / ICO：Pillow 12 原生支持，加白名单即可用"""
+
+    @pytest.mark.parametrize("ext", ["avif", "jp2", "ico"])
+    def test_roundtrip_keeps_size(self, tmp_path, ext):
+        src = str(tmp_path / f"src.{ext}")
+        base = Image.new("RGB", (320, 240), (40, 90, 140))
+        base.save(src, **({"quality": 80} if ext == "avif" else {}))
+
+        img = safe_open_image(src)
+        cfg = WatermarkConfig(text="万物可印", opacity=90,
+                              position="bottom-right", font_ratio=0.06)
+        marked = apply_watermark(img, cfg, 1.0)
+
+        dst = str(tmp_path / f"out.{ext}")
+        save_with_format(marked, dst)
+        back = Image.open(dst)
+        assert back.size == img.size
+
+    def test_avif_keeps_alpha(self, tmp_path):
+        src = str(tmp_path / "a.avif")
+        rgba = Image.new("RGBA", (120, 120), (0, 0, 0, 0))
+        rgba.putpixel((60, 60), (255, 0, 0, 200))
+        rgba.save(src, quality=80)
+        img = safe_open_image(src)
+        assert "A" in img.mode
+
+    def test_ico_writes_single_size(self, tmp_path):
+        # Pillow 默认会把一张图摊成 7 个尺寸，对加水印的大图毫无意义
+        out = str(tmp_path / "out.ico")
+        save_with_format(Image.new("RGB", (256, 256), (10, 20, 30)), out)
+        assert sorted(Image.open(out).ico.sizes()) == [(256, 256)]
+
+    def test_jp2_quality_mapping_follows_slider(self, tmp_path):
+        # JP2 的指标是压缩比（越小越清晰）：滑块调低必须得到更小的文件
+        highs, lows = [], []
+        img = Image.effect_noise((320, 240), 60).convert("RGB")
+        for q, bucket in ((95, highs), (20, lows)):
+            out = str(tmp_path / f"q{q}.jp2")
+            save_with_format(img, out, jpeg_quality=q)
+            bucket.append(os.path.getsize(out))
+        assert highs[0] > lows[0], "JP2 的 rates 映射没有随质量滑块变化"
+
+    def test_avif_quality_mapping_follows_slider(self, tmp_path):
+        img = Image.effect_noise((320, 240), 60).convert("RGB")
+        sizes = {}
+        for q in (95, 30):
+            out = str(tmp_path / f"q{q}.avif")
+            save_with_format(img, out, jpeg_quality=q)
+            sizes[q] = os.path.getsize(out)
+        assert sizes[95] > sizes[30]
+
+
+class TestNewFormatPlumbing:
+    def test_extensions_whitelisted(self):
+        for ext in (".avif", ".avifs", ".jp2", ".j2k", ".ico", ".svg"):
+            assert ext in SUPPORTED_EXTENSIONS, f"{ext} 没进白名单"
+            assert is_image_file("x" + ext)
+
+    @pytest.mark.parametrize("name,expected", [
+        ("AVIF", "avif"), ("avif", "avif"), ("Avif", "avif"),
+        ("JP2", "jp2"), ("jp2", "jp2"), ("JPEG2000", "jp2"),
+    ])
+    def test_aliases(self, name, expected):
+        assert normalize_format(name) == expected
+
+    def test_export_formats_include_new_ones(self):
+        assert "avif" in EXPORT_FORMATS
+        assert "jp2" in EXPORT_FORMATS
+        # 矢量与图标容器不进导出下拉：SVG 存不回去，ICO 由 auto 单独处理
+        assert "svg" not in EXPORT_FORMATS
+        assert "ico" not in EXPORT_FORMATS
+
+    def test_aliases_all_in_whitelist(self):
+        assert set(FORMAT_ALIASES.values()) <= set(VALID_FORMATS)
+

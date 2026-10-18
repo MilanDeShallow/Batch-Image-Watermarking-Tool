@@ -46,6 +46,14 @@ FORMAT_ALIASES = {
     "heic": "heic",
     "HEIF": "heic",
     "heif": "heic",
+    # AVIF 与 JPEG 2000：Pillow 12 原生编解码，质量参数各有各的语义
+    # （AVIF 用 0-100，JP2 用压缩比），换算在 watermark_engine 里做
+    "AVIF": "avif",
+    "avif": "avif",
+    "JP2": "jp2",
+    "jp2": "jp2",
+    "JPEG2000": "jp2",
+    "jpeg2000": "jp2",
     "PDF": "pdf",
     "pdf": "pdf",
 }
@@ -59,7 +67,14 @@ def normalize_format(value: str) -> str:
     """把界面文案或格式名统一成内部标识，未知值回落到 auto"""
     if not value:
         return "auto"
-    return FORMAT_ALIASES.get(str(value).strip(), "auto")
+    key = str(value).strip()
+    fmt = FORMAT_ALIASES.get(key)
+    if fmt is None:
+        # 别名表只收了"界面原样"和"全小写"两种写法，其余大小写
+        # （Avif / jp2 / Jpeg2000）再按小写试一次，
+        # 免得手写配置文件时因为大小写静默落回 auto
+        fmt = FORMAT_ALIASES.get(key.lower(), "auto")
+    return fmt
 
 
 @dataclass

@@ -596,7 +596,8 @@ class AppWindow(ctk.CTk, DnDWrapper):
         # 78 本来就装得下 —— 所以这里不再加宽。
         self._format_menu = ctk.CTkOptionMenu(
             self._row1, variable=self._format_var,
-            values=["自动", "PNG", "JPEG", "WebP", "TIFF", "HEIC", "PDF"], width=78,
+            values=["自动", "PNG", "JPEG", "WebP", "TIFF", "HEIC", "AVIF", "JP2", "PDF"],
+            width=78,
             command=self._on_format_changed,
         )
         self._format_menu.pack(side="left", padx=2)
@@ -1663,12 +1664,13 @@ class AppWindow(ctk.CTk, DnDWrapper):
             filetypes=[
                 ("所有支持的格式",
                  "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif "
-                 "*.heic *.heif *.gif *.pdf "
+                 "*.heic *.heif *.gif *.avif *.jp2 *.ico *.svg *.pdf "
                  "*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.flv *.wmv"),
                 # 过滤串必须与 config.SUPPORTED_EXTENSIONS 同步：
                 # 漏掉 .heic 时拖放能用、点「浏览」却选不到，用户会以为不支持。
                 ("图片文件",
-                 "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif *.heic *.heif *.gif"),
+                 "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif "
+                 "*.heic *.heif *.gif *.avif *.jp2 *.ico *.svg"),
                 ("PDF 文件", "*.pdf"),
                 ("视频文件", "*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.flv *.wmv"),
                 ("所有文件", "*.*"),

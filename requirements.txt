@@ -6,6 +6,8 @@ pillow==12.3.0
 # 它自带 libheif / libstdc++ 两个 dll（装在 site-packages 根目录，
 # 不在 pillow_heif 包内），打包时由 hooks/hook-pillow_heif.py 负责收集。
 pillow-heif==1.8.1
+# SVG 光栅化（纯 Rust 静态链接，单个 pyd，无额外 dll）
+resvg-py==0.5.0
 customtkinter==6.0.0
 tkinterdnd2==0.6.2
 

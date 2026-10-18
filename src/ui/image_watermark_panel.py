@@ -277,7 +277,8 @@ class ImageWatermarkPanel(ctk.CTkFrame):
             title="选择 Logo 图片",
             filetypes=[
                 ("图片文件",
-                 "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp *.heic *.heif"),
+                 "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp "
+                 "*.heic *.heif *.avif *.jp2 *.ico *.svg"),
                 ("所有文件", "*.*"),
             ]
         )

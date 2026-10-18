@@ -83,7 +83,20 @@ SUPPORTED_EXTENSIONS = frozenset({
     # HEIC/HEIF 靠本模块顶部的 pillow-heif 插件注册；.gif 走 Pillow 原生解码，
     # 只取首帧 —— 静态合成管线没有帧的概念。
     ".heic", ".heif", ".gif",
+    # AVIF / JPEG 2000 / ICO 都是 Pillow 12 原生支持的，加白名单即可用。
+    # .svg 例外：Pillow 完全不认识它，必须先经 resvg 光栅化成位图。
+    ".avif", ".avifs", ".jp2", ".j2k", ".ico", ".svg",
 })
+
+# SVG 光栅化的目标长边（像素）。
+# SVG 没有固定像素尺寸：一个 48x48 的图标直接光栅化只有 48 像素宽，
+# 按"字号 = 短边 4%"算出来的水印只有 2 像素高，糊成一团。
+# 统一放大到这个长边再合成，导出尺寸下观感才正常。
+SVG_RASTER_LONG_EDGE = 1600
+
+# 放大倍数上限：1x1 的 SVG 若按目标长边算要放大 1600 倍，
+# 像素数直接爆掉；夹住上限让它退化成一张小图，而不是让整批失败。
+SVG_MAX_ZOOM = 40.0
 
 # 可加视频水印的扩展名。
 # 刻意不含 .gif：它是动图，按图片处理更合理（多帧视频化会丢色彩与透明度）。
@@ -107,7 +120,10 @@ ACCEPTED_EXTENSIONS = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
 #
 # 不含 gif：动图输出需要逐帧渲染，本工具是静态管线；
 # 但 .gif **输入**仍然支持（自动模式下按首帧导出同名单帧 GIF）。
-EXPORT_FORMATS = ("auto", "png", "jpeg", "webp", "tiff", "heic", "pdf")
+# 可导出的格式。ico / svg 不在其中：
+#   - svg 是矢量，水印是像素运算，加完存不回矢量路径；
+#   - ico 是图标容器，由"保留原格式"路径单独处理（见 file_manager）。
+EXPORT_FORMATS = ("auto", "png", "jpeg", "webp", "tiff", "heic", "avif", "jp2", "pdf")
 
 # 九宫格位置的规范写法（垂直分量只有 top / middle / bottom）
 DEFAULT_POSITION = "bottom-right"

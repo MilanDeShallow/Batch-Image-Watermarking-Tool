@@ -301,6 +301,12 @@ def binary_probe(exe: str) -> None:
         check(f"{label}已随包", bool(found),
               found[0] if found else f"{target} 下没有 {pattern}")
 
+    # SVG 光栅化器同理：漏掉时程序照常启动，只有拖进 .svg 才报错
+    print("\n=== SVG 光栅化器 ===", flush=True)
+    svg_pyd = glob.glob(os.path.join(target, "resvg_py", "resvg_py*.pyd"))
+    check("resvg 光栅化器已随包", bool(svg_pyd),
+          svg_pyd[0] if svg_pyd else f"{target}\\resvg_py 下没有 resvg_py*.pyd")
+
 
 def launch_probe(exe: str, wait: float = 9.0) -> None:
     head("启动探测：exe 能跑起来并存活")

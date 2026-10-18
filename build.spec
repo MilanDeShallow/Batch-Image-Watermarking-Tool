@@ -73,6 +73,8 @@ a = Analysis(
         # collect_dynamic_libs('pillow_heif') 扫不到，原因见该 hook 的注释）
         'pillow_heif',
         '_pillow_heif',
+        # SVG 光栅化：单个 pyd（Rust 静态链接），PyInstaller 能直接分析到
+        'resvg_py',
     ],
     hookspath=['hooks'],
     hooksconfig={},

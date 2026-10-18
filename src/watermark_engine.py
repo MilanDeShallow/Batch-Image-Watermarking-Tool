@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import gc
+import io
 import os
 from typing import Optional
 
@@ -28,6 +29,8 @@ from src.config import (
     DEFAULT_POSITION,
     HEIF_AVAILABLE,
     MAX_IMAGE_PIXELS,
+    SVG_MAX_ZOOM,
+    SVG_RASTER_LONG_EDGE,
     normalize_position,
 )
 from src.logger import log_warning
@@ -151,6 +154,63 @@ def load_font_with_fallback(user_path: str | None, size: int) -> tuple:
 # 图片安全打开 — EXIF 校正 + 色彩空间兼容
 # ============================================================
 
+def _open_svg_as_image(path: str) -> Image.Image:
+    """
+    把 SVG 光栅化成位图（RGBA）。
+
+    Pillow 不认识 SVG —— 它是矢量格式，没有"像素"这个概念，所以这一步
+    必须借助 resvg 完成，产出一张位图后才能进入常规合成管线。
+
+    为什么要放大：SVG 的 width/height 常常只是"逻辑尺寸"（图标 48x48
+    很常见），直接光栅化只有 48 像素宽，而水印字号按短边比例算，结果
+    只有 2 像素高 —— 糊到看不出是什么。统一把长边拉到
+    SVG_RASTER_LONG_EDGE（默认 1600）再合成，导出尺寸下才正常。
+
+    为什么不缩小：比目标还大的 SVG 本身分辨率够用，缩小只会白丢细节。
+
+    渲染两次的代价可以接受（resvg 渲染一张图通常几十毫秒），
+    换来的是"任意尺寸的 SVG 都能出一张水印比例正确的图"。
+    """
+    name = os.path.basename(path)
+    try:
+        import resvg_py
+    except Exception as exc:  # pragma: no cover - 只在缺组件的环境触发
+        raise ValueError(f"无法读取 SVG {name}：缺少 SVG 渲染组件") from exc
+
+    def _render(**kwargs) -> Image.Image:
+        raw = bytes(resvg_py.svg_to_bytes(svg_path=path, **kwargs))
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+        return img
+
+    try:
+        img = _render()
+    except Exception as exc:
+        # SVG 语法错误 / 引用了外部资源等，都在这一步暴露
+        raise ValueError(f"无法读取 SVG {name}：{exc}") from exc
+
+    if img.width * img.height > MAX_IMAGE_PIXELS_LIMIT:
+        raise ValueError(
+            f"SVG 渲染后像素数超过安全上限（{MAX_IMAGE_PIXELS_LIMIT:,} 像素），"
+            f"已拒绝处理：{name}"
+        )
+
+    long_edge = max(img.size)
+    if long_edge and long_edge < SVG_RASTER_LONG_EDGE:
+        zoom = min(SVG_RASTER_LONG_EDGE / long_edge, SVG_MAX_ZOOM)
+        # 差 5% 以内不值得再渲染一次
+        if zoom > 1.05:
+            try:
+                bigger = _render(zoom=zoom)
+                if bigger.width * bigger.height <= MAX_IMAGE_PIXELS_LIMIT:
+                    img = bigger
+            except Exception:
+                # 放大失败就退回原尺寸：宁可水印偏小，也不能整张处理不了
+                pass
+
+    return img.convert("RGBA")
+
+
 def safe_open_image(path: str) -> Image.Image:
     """
     安全打开图片文件，执行以下预处理：
@@ -167,6 +227,12 @@ def safe_open_image(path: str) -> Image.Image:
     - 因此用 with 包住整个读取过程，并返回完全脱离文件的对象副本
     """
     name = os.path.basename(path)
+
+    # SVG 不是位图：Pillow 完全打不开它，必须先光栅化。
+    # 放在最前面是因为下面所有处理（EXIF 方向、模式归一化、多帧）
+    # 对矢量图都不适用。
+    if os.path.splitext(path)[1].lower() == ".svg":
+        return _open_svg_as_image(path)
 
     try:
         opener = Image.open(path)
@@ -863,6 +929,30 @@ def save_with_format(
         kwargs = {"quality": jpeg_quality}
         if safe_exif:
             kwargs["exif"] = safe_exif
+
+    elif ext == ".avif":
+        # AVIF 的 quality 语义与 JPEG 一致（0-100），直接透传即可。
+        # 它支持 alpha，RGBA 不用降级成 RGB。
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        kwargs = {"quality": jpeg_quality}
+        if safe_exif:
+            kwargs["exif"] = safe_exif
+
+    elif ext in (".jp2", ".j2k"):
+        # JPEG 2000 没有 0-100 的质量档：它的指标是压缩比 rates，
+        # 数值越小越清晰（5 ≈ 视觉无损，80 ≈ 狠压）。
+        # 这里把用户熟悉的质量滑块线性映射过去：90 → 约 11:1。
+        rates = max(2, int(round((100 - jpeg_quality) * 1.1)))
+        kwargs = {"quality_mode": "rates", "quality_layers": [rates]}
+        if safe_exif:
+            kwargs["exif"] = safe_exif
+
+    elif ext == ".ico":
+        # 只写原尺寸这一帧。Pillow 默认会把一张图摊成 7 个尺寸
+        # （16x12 … 256x192），对"一张加了水印的大图"毫无意义，
+        # 白白多出六份缩略图。用户拿 ICO 进来通常只要最大那张。
+        kwargs = {"sizes": [img.size]}
 
     elif ext == ".gif":
         # 静态单帧：动图水印要逐帧渲染再重排帧时序，静态合成管线做不到，
