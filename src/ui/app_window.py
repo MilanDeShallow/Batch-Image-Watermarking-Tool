@@ -102,7 +102,7 @@ DEFAULT_LEFT_RATIO = 0.16
 DEFAULT_CENTER_RATIO = 0.65
 # 布局文件版本：v1 存的是旧口径（左 0.24 / 中 0.43），v2 起换成上面这组，
 # 读到旧文件时丢掉比例、保留窗口几何 —— 否则用户升级后仍被旧比例困住
-LAYOUT_VERSION = 2
+LAYOUT_VERSION = 3
 
 # 底部栏的设计高度（逻辑像素）—— 两行控件：输出目录那行 + 同名策略/质量/开始处理那行。
 # 它只是"设计值"：真正的最小高度取控件算出的请求高度（随 DPI 缩放变化），
@@ -989,8 +989,8 @@ class AppWindow(ctk.CTk, DnDWrapper):
             layout = {}
 
         if int(layout.get("v", 1)) < LAYOUT_VERSION:
-            # 旧口径的比例（左 0.24 / 中 0.43）留着会白白多占左栏一百多像素；
-            # 窗口几何照旧保留，只把比例丢掉、改用本版默认值
+            # v1 是旧的 0.24/0.43 口径；v2 的下限算错过一次缩放（左栏被撑到 29%）。
+            # 两种旧比例都会占掉不该占的宽度；窗口几何照旧保留，只丢比例
             layout.pop("left_ratio", None)
             layout.pop("center_ratio", None)
 
@@ -1024,20 +1024,6 @@ class AppWindow(ctk.CTk, DnDWrapper):
         for index, btn in enumerate(self._file_btn_order):
             btn.grid(row=index // cols, column=index % cols, sticky=sticky, padx=2, pady=2)
 
-    def _px(self, logical: float) -> int:
-        """逻辑像素 → Tk 像素。本机 150% 缩放时 1 逻辑 = 1.5 物理。
-
-        `winfo_width()` / `sash_place()` 走的是物理像素，而 MIN_LEFT 这组常量
-        是按控件 reqwidth 量的逻辑值。不换算的话，150% 缩放下左栏下限只有
-        应有值的三分之二 —— 表现就是"拖到最窄，文件名和提示语被截"。
-        `winfo_fpixels('1i')/96` 在本机返回 1.0（Tk 自报 96 DPI，靠不住），
-        所以用项目里现成的 ScalingTracker 口径。
-        """
-        try:
-            return int(round(logical * _tk_units_scale(self)))
-        except Exception:
-            return int(round(logical))
-
     def _apply_layout(self, layout: dict):
         """按比例设置分隔线位置"""
         try:
@@ -1057,12 +1043,10 @@ class AppWindow(ctk.CTk, DnDWrapper):
             right_ratio = max(0.05, 1.0 - left_ratio - center_ratio)
             sash_w = int(self._hpaned.cget("sashwidth"))
 
-            left_w = min(max(int(total_w * left_ratio), self._px(MIN_LEFT)),
-                         self._px(MAX_LEFT))
-            right_w = min(max(int(total_w * right_ratio), self._px(MIN_RIGHT)),
-                          self._px(MAX_RIGHT))
-            center_w = max(self._px(MIN_CENTER),
-                           total_w - left_w - right_w - 2 * sash_w)
+            # 这些常量与 total_w 同为物理像素（都来自 winfo_* 口径），不要再乘缩放
+            left_w = min(max(int(total_w * left_ratio), MIN_LEFT), MAX_LEFT)
+            right_w = min(max(int(total_w * right_ratio), MIN_RIGHT), MAX_RIGHT)
+            center_w = max(MIN_CENTER, total_w - left_w - right_w - 2 * sash_w)
 
             if len(self._hpaned.panes()) >= 2:
                 self._hpaned.sash_place(0, left_w, 0)
