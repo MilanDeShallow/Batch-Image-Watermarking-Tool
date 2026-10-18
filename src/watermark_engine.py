@@ -24,8 +24,27 @@ from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageStat
 
-from src.config import DEFAULT_POSITION, MAX_IMAGE_PIXELS, normalize_position
+from src.config import (
+    DEFAULT_POSITION,
+    HEIF_AVAILABLE,
+    MAX_IMAGE_PIXELS,
+    normalize_position,
+)
 from src.logger import log_warning
+
+
+# ============================================================
+# HEIC/HEIF 解码器
+# ============================================================
+# register_heif_opener() 由 src.config 在导入时完成（原因见那里的注释：
+# 引擎在 UI 里都是延迟导入，只在引擎里注册会漏掉"先选 Logo 后加图片"的时序）。
+# 这里只负责把失败后果记进日志 —— Pillow 自己的报错是
+# "cannot identify image file"，看不出是缺解码器，日志里必须说清楚。
+if not HEIF_AVAILABLE:  # pragma: no cover - 只在缺解码器的环境触发
+    log_warning(
+        "HEIC/HEIF 解码器不可用（pillow-heif 未安装或缺少 libheif 动态库）："
+        ".heic / .heif 文件将无法打开"
+    )
 
 # 合成管线是 8 位/通道，这些模式携带的位深无法保留 —— 转换时记一条日志，
 # 避免「高光全白却毫无提示」。Pillow 对 16 位灰度会返回带 "I;" 前缀的名字
@@ -166,6 +185,28 @@ def safe_open_image(path: str) -> Image.Image:
     # 批量失败清单里只会留下一句无从下手的报错，找不到是哪个文件出的问题
     try:
         with opener as src:
+            # 多帧文件（GIF / APNG / 多页 TIFF）只取第一帧。
+            # 本工具是静态合成管线：没有"帧"的概念，若顺手把带水印的首帧
+            # 存回动图扩展名，用户拿到的是一张静止图，却以为水印做坏了；
+            # 这里显式 seek(0) 并记日志，至少让异常在日志里说得清。
+            # n_frames 不存在时（绝大多数静态格式不提供该属性）取 1。
+            try:
+                frame_count = int(getattr(src, "n_frames", 1) or 1)
+            except Exception:
+                frame_count = 1
+            if frame_count > 1:
+                # 措辞按格式分：多页 TIFF 的"页"不是动画帧，
+                # 说成"动图"会让用户以为工具把扫描件当动画处理坏了
+                # （而且会去翻一张根本不存在的动画）。
+                if str(getattr(src, "format", "")).upper() == "TIFF":
+                    log_warning(f"{name} 是多页 TIFF（{frame_count} 页），按第 1 页处理")
+                else:
+                    log_warning(f"{name} 是多帧动图（{frame_count} 帧），按首帧处理")
+                try:
+                    src.seek(0)
+                except Exception:
+                    pass  # 个别容器不支持 seek，此时本身就停在首帧
+
             src.load()  # 强制加载像素数据，尽早发现损坏文件
 
             # 1. EXIF 方向自动校正（返回脱离文件的新对象）
@@ -766,7 +807,10 @@ def save_with_format(
     功能：
     - JPEG: RGBA→RGB（白底）+ 安全 EXIF（Orientation 已清除）
     - PNG: 保持 RGBA
-    - TIFF/WebP: 支持 EXIF 透传
+    - WebP: 按 jpeg_quality 有损编码（method=6）+ EXIF 透传
+    - TIFF: LZW 无损 + EXIF 透传
+    - HEIC/HEIF: 按 jpeg_quality 编码；环境缺解码器时抛 ValueError
+    - GIF: 静态单帧，且保留透明（交给 Pillow 做 RGBA→P，别自己转）
     - 其他: 直接保存
     """
     ext = os.path.splitext(path)[1].lower()
@@ -793,11 +837,49 @@ def save_with_format(
         # if safe_exif:
         #     kwargs["exif"] = safe_exif
 
-    elif ext in (".tiff", ".webp"):
-        # TIFF/WebP 支持 EXIF
-        kwargs = {}
+    elif ext == ".webp":
+        # WebP 单独拆出来（以前和 TIFF 共用"只透传 EXIF"的分支）：
+        # 它是有损格式，quality 直接决定体积与画质，不传就会用 Pillow 默认的 80，
+        # 用户把质量滑块拉到 100 却拿到 80 的结果。
+        # method=6 是最慢但压缩率最好的一档 —— 批量导出多花几百毫秒换更小文件值得。
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        kwargs = {"quality": jpeg_quality, "method": 6}
         if safe_exif:
             kwargs["exif"] = safe_exif
+
+    elif ext in (".tiff", ".tif"):
+        # TIFF 用 LZW：无损，但比未压缩小得多。
+        # 水印文字边缘对比度高，用 JPEG-in-TIFF 会在字边留振铃。
+        kwargs = {"compression": "tiff_lzw"}
+        if safe_exif:
+            kwargs["exif"] = safe_exif
+
+    elif ext in (".heic", ".heif"):
+        # 缺解码器时给出具体原因，而不是让 Pillow 抛 "unknown file extension"。
+        # RGBA 可以直接存（pillow-heif 内部做 4:2:0 + alpha 通道编码）。
+        if not HEIF_AVAILABLE:
+            raise ValueError("当前环境不支持 HEIC 输出")
+        kwargs = {"quality": jpeg_quality}
+        if safe_exif:
+            kwargs["exif"] = safe_exif
+
+    elif ext == ".gif":
+        # 静态单帧：动图水印要逐帧渲染再重排帧时序，静态合成管线做不到，
+        # 硬存动画只会得到一堆叠影 + 错乱的时长。这里明确降级为单帧。
+        #
+        # 这里**刻意不做任何 convert** —— 曾经写过
+        # `img.convert("P", palette=Image.ADAPTIVE)`，结果透明区全丢了：
+        # GIF 的"透明"= 调色板里的一个索引 + 文件头里的 transparency 标记，
+        # 而这个标记只有 Pillow 在 save() 内部做 RGBA→P 转换时才会设置
+        # （GifImagePlugin._normalize_mode 会挑一个全透明调色板项写进 info）。
+        # 自己先转成 P 再存，等于绕过了那一步：文件里没有 transparency 标记，
+        # 透明背景导出成实色（实测角落从 alpha=0 变成不透明），且毫无报错。
+        # 把转换留给 Pillow，单帧与透明才能同时成立。
+        #
+        # 已知限制：GIF 只有"全透明 / 全不透明"两档，半透明边缘（PNG 贴图）
+        # 会被量化成不透明像素 —— 这是格式限制，要留半透明请选 PNG / WebP。
+        kwargs = {}
 
     else:
         # 其他格式（BMP 等）

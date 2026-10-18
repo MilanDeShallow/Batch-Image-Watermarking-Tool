@@ -279,6 +279,29 @@ def symbol_probe(exe: str) -> None:
 # 启动探测
 # ============================================================
 
+def binary_probe(exe: str) -> None:
+    """
+    检查第三方解码器的二进制是否真的进了包。
+
+    为什么需要单独一条：HEIC 的 Python 侧模块被打进 PYZ（磁盘上看不到实体
+    文件），真正决定"能不能解码"的是 _internal 根目录下的 libheif*.dll 与
+    _pillow_heif*.pyd。这两个漏掉时程序照常启动、符号探测也全绿，
+    只有用户拖进一张 .heic 才报错 —— 属于最晚暴露的一类问题。
+    """
+    internal = os.path.join(os.path.dirname(exe), "_internal")
+    target = internal if os.path.isdir(internal) else os.path.dirname(exe)
+
+    print("\n=== HEIC 解码器二进制 ===", flush=True)
+    for pattern, label in (
+        ("libheif*.dll", "libheif 动态库"),
+        ("_pillow_heif*.pyd", "pillow-heif 原生扩展"),
+        ("libstdc++*.dll", "libheif 依赖的 libstdc++"),
+    ):
+        found = glob.glob(os.path.join(target, pattern))
+        check(f"{label}已随包", bool(found),
+              found[0] if found else f"{target} 下没有 {pattern}")
+
+
 def launch_probe(exe: str, wait: float = 9.0) -> None:
     head("启动探测：exe 能跑起来并存活")
     proc = subprocess.Popen([exe], cwd=os.path.dirname(exe))
@@ -320,6 +343,7 @@ def main() -> int:
         return 2
 
     symbol_probe(exe)
+    binary_probe(exe)
     if args.launch:
         launch_probe(exe, args.wait)
 

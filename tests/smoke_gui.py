@@ -71,7 +71,7 @@ from src.pdf_engine import (  # noqa: E402
     pdf_page_reference_size,
     render_pdf_page,
 )
-from src.ui.app_window import AppWindow, VIDEO_MODE_LABELS  # noqa: E402
+from src.ui.app_window import AppWindow, HEIC_SLOW_HINT, VIDEO_MODE_LABELS  # noqa: E402
 
 
 # ---------------------------------------------------------------
@@ -195,6 +195,20 @@ def main():
     make_pdf(C, pages=2)
 
     head("创建窗口")
+    # 把界面布局文件指到一个**不存在**的临时路径，再建窗口：
+    #   1) 不读、不写开发机上的真实 %APPDATA%\\WatermarkTool\\ui_layout.json；
+    #   2) 于是这次启动等价于"全新安装后的第一次打开"，正好覆盖
+    #      「没有布局文件时也要摆一次默认布局」这条回归
+    #      （不摆的话底部栏只分到一行高，「开始处理」直接看不见）。
+    import src.ui.app_window as _aw
+
+    _nolayout = os.path.join(tempfile.gettempdir(), "smoke_absent_ui_layout.json")
+    try:
+        os.remove(_nolayout)
+    except Exception:
+        pass
+    _aw.LAYOUT_FILE = _nolayout
+
     app = AppWindow()
     app.withdraw()
     try:
@@ -405,6 +419,89 @@ def main():
     app.update()
     check("切回 PNG 后合并开关隐藏且复位",
           not is_managed(app._merge_pdf_cb) and not app._merge_pdf_var.get())
+
+    # ---------- 格式切换：HEIC 提示 ----------
+    # 注意 CTkOptionMenu.set() 只改变量、**不触发 command**，
+    # 所以这里必须显式调 _on_format_changed —— 只用 set() 的话
+    # 提示文案的联动永远不会被验证到。
+    head("输出格式：HEIC 提示")
+    app._format_var.set("HEIC")
+    app._on_format_changed("HEIC")
+    app.update()
+    check("选 HEIC 后状态栏给出编码较慢提示",
+          app._status_label.cget("text") == HEIC_SLOW_HINT,
+          repr(app._status_label.cget("text")))
+
+    app._format_var.set("PNG")
+    app._on_format_changed("PNG")
+    app.update()
+    check("切离 HEIC 后提示被清空",
+          app._status_label.cget("text") == "",
+          repr(app._status_label.cget("text")))
+
+    # ---------- 底栏几何：一次性探针窗口 ----------
+    # 宽度/高度只有在"已映射"的窗口上才有意义：主 app 全程 withdraw，
+    # 而 Tk 里未映射窗口的子控件 winfo_width() 恒为 1（只有 reqwidth() 有值），
+    # 在这里直接量永远是 1/175。
+    #
+    # 为什么不直接 deiconify 主 app：`_save_layout` 依赖"窗口未映射时
+    # winfo_width()==1 就跳过几何"来保住用户已有的布局比例；
+    # 主 app 一旦被映射过，后面「旧布局比例被保留」那条会立刻变红
+    # （实测 bottom_ratio 被写成 0.8394）。
+    #
+    # 探针窗口是一次性的：建 → 量 → 立刻销毁，不碰主 app 的任何状态。
+    # 它的 LAYOUT_FILE 也被指到不存在的临时文件（见 main() 开头），
+    # 所以这一段同时覆盖了「没有 ui_layout.json 时也要摆一次默认布局」
+    # ——不摆的话底部栏只有一行高，「开始处理」是 1×1 且未映射。
+    head("底栏几何（探针窗口）：两行完整 / HEIC 提示不挤按钮")
+    _probe_session = _aw.SESSION_FILE
+    _aw.SESSION_FILE = os.path.join(tempfile.gettempdir(), "smoke_absent_session.json")
+    probe = None
+    try:
+        probe = AppWindow()
+        probe.withdraw()
+        try:
+            probe.attributes("-alpha", 0.0)   # 透明，不打扰使用者
+        except Exception:
+            pass
+        probe._preview_canvas._render_in_background = lambda *a, **k: None
+        probe.deiconify()
+
+        _vbar = probe._vpaned.nametowidget(probe._vpaned.panes()[1])
+        _deadline = time.time() + 3.0
+        while time.time() < _deadline:
+            probe.update()
+            if (_vbar.winfo_height() >= _vbar.winfo_reqheight() - 2
+                    and probe._start_btn.winfo_width() > 1):
+                break
+            time.sleep(0.03)
+        probe.update()
+
+        check("首次启动底栏高度容得下两行",
+              _vbar.winfo_height() >= _vbar.winfo_reqheight() - 2,
+              f"{_vbar.winfo_height()}/{_vbar.winfo_reqheight()}")
+        check("首次启动第二行已映射（开始处理可见）",
+              bool(probe._start_btn.winfo_ismapped()),
+              f"mapped={probe._start_btn.winfo_ismapped()} "
+              f"w={probe._start_btn.winfo_width()}")
+
+        probe._format_var.set("HEIC")
+        probe._on_format_changed("HEIC")
+        probe.update_idletasks()
+        probe.update()
+        check("HEIC 提示没有挤小「开始处理」",
+              probe._start_btn.winfo_width() >= probe._start_btn.winfo_reqwidth(),
+              f"{probe._start_btn.winfo_width()}/{probe._start_btn.winfo_reqwidth()}")
+        check("HEIC 提示没有挤小「取消」",
+              probe._cancel_btn.winfo_width() >= probe._cancel_btn.winfo_reqwidth(),
+              f"{probe._cancel_btn.winfo_width()}/{probe._cancel_btn.winfo_reqwidth()}")
+    finally:
+        if probe is not None:
+            try:
+                probe.destroy()
+            except Exception:
+                pass
+        _aw.SESSION_FILE = _probe_session
 
     # ---------- 导出：PDF + 合并 ----------
     head("导出：PDF（合并为单个）")

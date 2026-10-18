@@ -127,7 +127,9 @@ def generate_output_path(
             - {date}: 处理日期 YYYYMMDD
             - {time}: 处理时间 HHMMSS
             - {seq}: 自增序号
-        output_format: 输出格式 ("auto" | "png" | "jpeg")
+        output_format: 输出格式（取值见 config.EXPORT_FORMATS：auto / png /
+            jpeg / webp / tiff / heic / pdf）。非 auto 时按原样拼扩展名，
+            因此新增格式在这里无需改动 —— 前提是它已在白名单里。
         seq_counter: 自增序号（若模板含 {seq}）
         existing_names: 已存在的文件名集合（用于检测重名）
         on_conflict: 同名输出文件的处理策略

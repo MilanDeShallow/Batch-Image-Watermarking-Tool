@@ -2,6 +2,10 @@
 # 固定而非范围区间：本工具的产物是"文件"，不同 Pillow 大版本的编码器
 # 与重采样实现都可能让同一套参数产出不同字节；出问题时要能精确复现。
 pillow==12.3.0
+# HEIC/HEIF 支持：pillow 本身不解 HEIC，靠它注册 Pillow 的 opener 插件。
+# 它自带 libheif / libstdc++ 两个 dll（装在 site-packages 根目录，
+# 不在 pillow_heif 包内），打包时由 hooks/hook-pillow_heif.py 负责收集。
+pillow-heif==1.8.1
 customtkinter==6.0.0
 tkinterdnd2==0.6.2
 

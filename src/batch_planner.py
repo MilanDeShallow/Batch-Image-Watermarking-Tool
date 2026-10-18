@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from src.config import (
     CONFLICT_RENAME,
     DEFAULT_FILENAME_TEMPLATE,
+    EXPORT_FORMATS,
     WatermarkConfig,
 )
 from src.file_manager import DESKTOP_FALLBACK_DIRNAME, is_pdf_file
@@ -24,6 +25,8 @@ from src.video_engine import OUTPUT_MODE_MP4, is_video_file, target_container
 
 
 # 界面下拉文案 / 格式名 → 内部格式标识
+# 大小写两种写法都收：下拉给的是 "WebP"，配置文件 / 命令行里写 "webp" 也得认，
+# 否则同一个格式会因为大小写不同静默落回 auto（用户以为选了 WebP，实际存了 PNG）。
 FORMAT_ALIASES = {
     "自动": "auto",
     "auto": "auto",
@@ -33,12 +36,23 @@ FORMAT_ALIASES = {
     "jpeg": "jpeg",
     "JPG": "jpeg",
     "jpg": "jpeg",
+    "WebP": "webp",
+    "webp": "webp",
+    "TIFF": "tiff",
+    "tiff": "tiff",
+    # HEIF 与 HEIC 是同一个容器（HEIC 是 HEIF 里"用 HEVC 编的图片"的叫法），
+    # 统一归到 heic，避免导出时出现 .heic / .heif 两种扩展名的同一种东西。
+    "HEIC": "heic",
+    "heic": "heic",
+    "HEIF": "heic",
+    "heif": "heic",
     "PDF": "pdf",
     "pdf": "pdf",
 }
 
-# 归一化后的合法格式
-VALID_FORMATS = ("auto", "png", "jpeg", "pdf")
+# 归一化后的合法格式 —— 直接引用 config 里的白名单，避免两处各写一份。
+# 保持元组语义：既有调用方会拿它做 in 判断 / 顺序遍历。
+VALID_FORMATS = tuple(EXPORT_FORMATS)
 
 
 def normalize_format(value: str) -> str:

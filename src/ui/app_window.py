@@ -76,6 +76,17 @@ VIDEO_MODE_LABELS = {
 }
 VIDEO_MODE_FROM_LABEL = {label: mode for mode, label in VIDEO_MODE_LABELS.items()}
 
+# 选中 HEIC 输出时状态栏的提示文案。
+#
+# 两个约束决定了它必须短、并且要能收掉：
+# 1. 状态栏在底栏第二行，那一行同样是 pack(side="left") 密集排列，
+#    「取消」「开始处理」两个按钮排在最后。文案过长会把取消按钮
+#    挤成一条 1px 的色块（实测 16 字文案时行宽超出 59 物理像素，
+#    取消按钮直接被压没）—— 这是本项目历史上出现过的同类故障。
+# 2. 所以文案控制在 ~10 个字符内，并且用常量定义：
+#    切换格式时要按内容比对把它清掉，不然它会在状态栏一直占位。
+HEIC_SLOW_HINT = "HEIC 编码较慢"
+
 # 各区域最小尺寸
 MIN_LEFT = 180
 MIN_CENTER = 300
@@ -572,9 +583,20 @@ class AppWindow(ctk.CTk, DnDWrapper):
 
         ctk.CTkLabel(self._row1, text="格式:").pack(side="left", padx=(0, 2))
         self._format_var = ctk.StringVar(value="自动")
+        # 下拉文案的顺序即用户看到的顺序。这里是唯一一处"文案 → 内部标识"
+        # 的映射入口，内部标识由 batch_planner.FORMAT_ALIASES 归一化，
+        # 合法集合来自 config.EXPORT_FORMATS（不要在界面里另抄一份）。
+        #
+        # 宽度必须留在 78：底栏第一行是 pack(side="left") 密集排列，
+        # 在默认窗口宽度（1150）下这一行的总请求宽度已接近可用宽度。
+        # 实测（1150 → 1660 物理像素）：
+        #   下拉 78 → 总请求 1667，"合并为单个 PDF" 分到 189px，文案完整；
+        #   下拉 88 → 总请求 1685，勾选框只分到 171px，文案被截成"合并为单个 P"。
+        # 新增的 WebP / TIFF / HEIC 都是 4 个字符，与原有最长的 JPEG 同宽，
+        # 78 本来就装得下 —— 所以这里不再加宽。
         self._format_menu = ctk.CTkOptionMenu(
             self._row1, variable=self._format_var,
-            values=["自动", "PNG", "JPEG", "PDF"], width=78,
+            values=["自动", "PNG", "JPEG", "WebP", "TIFF", "HEIC", "PDF"], width=78,
             command=self._on_format_changed,
         )
         self._format_menu.pack(side="left", padx=2)
@@ -929,14 +951,34 @@ class AppWindow(ctk.CTk, DnDWrapper):
             return False
 
     def _restore_layout(self):
-        """从 ui_layout.json 恢复分隔线比例"""
+        """
+        从 ui_layout.json 恢复分隔线比例；没有文件时按默认比例摆一次。
+
+        为什么"没有文件"也必须摆：`paneconfigure(minsize=...)` 与
+        `_vpaned.add(..., height=...)` 都只约束**用户拖拽**时的下限，
+        不会主动把空间分给底部栏。首次启动（没有 ui_layout.json）时，
+        实测底部栏只拿到 82 物理像素，而两行控件的请求高度是 140 ——
+        第二行的「开始处理」「取消」直接是 1×1 且未映射，
+        用户第一次打开就看不到开始按钮，界面上却没有任何报错。
+        手动拖一下分隔线、或跑一次 `_apply_layout` 就立刻恢复正常，
+        说明差的正是这一次调用。
+        """
+        layout = {}
         try:
             if os.path.exists(LAYOUT_FILE):
                 with open(LAYOUT_FILE, 'r', encoding='utf-8') as f:
                     layout = json.load(f)
-                self.after(300, lambda: self._apply_layout(layout))
         except Exception:
-            pass
+            # 文件损坏 / 无权限读：回落到默认比例，而不是干脆不摆布局
+            # （不摆的结果就是上面说的"底部栏只剩一行"）。
+            layout = {}
+
+        if not isinstance(layout, dict):
+            layout = {}
+
+        # 300ms：等窗口真正完成首次几何计算，此时 winfo_height 才有意义，
+        # 否则会按 1px 的总高度去算比例。
+        self.after(300, lambda: self._apply_layout(layout))
 
     def _apply_layout(self, layout: dict):
         """按比例设置分隔线位置"""
@@ -1218,6 +1260,16 @@ class AppWindow(ctk.CTk, DnDWrapper):
             # 视频没有"页"，塞不进 PDF。plan_batch 会把视频照样输出成 mp4，
             # 但用户选了 PDF 却看到一堆 mp4，不说清楚就是"程序没按我选的来"
             self._status_label.configure(text="视频不参与 PDF，仍按「视频」选项输出")
+        elif choice == "HEIC":
+            # HEIC 编码明显慢于 JPEG（640×480 就要 0.3~0.8 秒，1080p 更久）。
+            # 大批量时进度条前半段几乎不动，用户很容易以为卡死并强行关窗口。
+            # 放在状态栏而不是弹窗：提示不该打断已经开始的操作。
+            self._status_label.configure(text=HEIC_SLOW_HINT)
+        elif self._status_label.cget("text") == HEIC_SLOW_HINT:
+            # 切走 HEIC 就把提示收掉：状态栏所在的第二行也是密集排列，
+            # 一段多出来的文字会把末尾的「取消」按钮压成一条色块。
+            # 只清自己写的那条，别把进度/结果消息也擦掉。
+            self._status_label.configure(text="")
 
     def _has_video_files(self) -> bool:
         """当前列表里是否含视频（界面刷新不该因列表状态抛错）"""
@@ -1610,9 +1662,13 @@ class AppWindow(ctk.CTk, DnDWrapper):
             title="选择图片 / PDF / 视频文件",
             filetypes=[
                 ("所有支持的格式",
-                 "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif *.pdf "
+                 "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif "
+                 "*.heic *.heif *.gif *.pdf "
                  "*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.flv *.wmv"),
-                ("图片文件", "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif"),
+                # 过滤串必须与 config.SUPPORTED_EXTENSIONS 同步：
+                # 漏掉 .heic 时拖放能用、点「浏览」却选不到，用户会以为不支持。
+                ("图片文件",
+                 "*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif *.heic *.heif *.gif"),
                 ("PDF 文件", "*.pdf"),
                 ("视频文件", "*.mp4 *.mov *.m4v *.mkv *.avi *.webm *.flv *.wmv"),
                 ("所有文件", "*.*"),

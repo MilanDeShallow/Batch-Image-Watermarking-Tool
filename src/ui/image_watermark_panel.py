@@ -276,7 +276,8 @@ class ImageWatermarkPanel(ctk.CTkFrame):
         path = filedialog.askopenfilename(
             title="选择 Logo 图片",
             filetypes=[
-                ("图片文件", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.webp"),
+                ("图片文件",
+                 "*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp *.heic *.heif"),
                 ("所有文件", "*.*"),
             ]
         )

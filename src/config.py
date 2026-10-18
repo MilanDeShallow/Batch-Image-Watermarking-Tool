@@ -44,6 +44,33 @@ DEFAULT_FILENAME_TEMPLATE = "{original}_watermarked"
 # 以前两处各写一份 300_000_000，改一处忘一处会出现"预警了却没拦住"。
 MAX_IMAGE_PIXELS = 300_000_000
 
+# ============================================================
+# 图片解码器注册（HEIC / HEIF）
+# ============================================================
+# 为什么注册放在 config：它和「支持哪些格式」是同一件事。
+#
+# Pillow 本身不认识 HEIC —— pillow-heif 是以插件形式注册进去的 opener，
+# 不调用 register_heif_opener()，Image.open("x.heic") 只会得到
+# "cannot identify image file: x.heic"，用户看不出是解码器没装。
+#
+# 为什么不能只写在 watermark_engine 里：UI 对引擎的引用**全部是函数内延迟导入**
+# （preview_canvas / file_list / Logo 面板都是），所以「启动后先选 Logo、
+# 后加载图片」这个顺序下引擎还没被导入过，此时选一个 .heic Logo 会直接报
+# "无法打开图片"。config 是所有图片相关模块的最上游（引擎 / 文件管理 /
+# 内存预算 / 各面板都导入它），在这里注册可以保证任何一次 Image.open
+# 之前解码器都已就绪。
+#
+# 注册失败不能让程序起不来：缺 dll 时其余格式照常可用，只是 .heic/.heif
+# 打不开 —— 由调用方读 HEIF_AVAILABLE 决定怎么提示（引擎会在启动时记日志）。
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    HEIF_AVAILABLE = True
+except Exception:  # pragma: no cover - 取决于运行环境的 dll 是否完整
+    HEIF_AVAILABLE = False
+
+
 # 可批量处理的输入扩展名（小写，含 PDF）。
 # 注意这里是"输入"而不是"图片"：PDF 也会被收集进来，
 # 只是走不同的处理分支（见 batch_planner）。
@@ -53,6 +80,9 @@ MAX_IMAGE_PIXELS = 300_000_000
 # VIDEO_EXTENSIONS，两者合起来才是"程序接受的全部输入"（ACCEPTED_EXTENSIONS）。
 SUPPORTED_EXTENSIONS = frozenset({
     ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif", ".pdf",
+    # HEIC/HEIF 靠本模块顶部的 pillow-heif 插件注册；.gif 走 Pillow 原生解码，
+    # 只取首帧 —— 静态合成管线没有帧的概念。
+    ".heic", ".heif", ".gif",
 })
 
 # 可加视频水印的扩展名。
@@ -64,6 +94,20 @@ VIDEO_EXTENSIONS = frozenset({
 
 # 程序接受的全部输入（文件对话框过滤、拖放、目录扫描都用它）
 ACCEPTED_EXTENSIONS = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
+
+# 可选导出格式（内部标识，小写）—— 格式合法性的**单一来源**。
+#
+# 为什么必须收敛成常量：以前「合法格式」在 batch_planner 的 VALID_FORMATS
+# 里单独写了一份，加一个格式就要改两处，
+# 漏一处的结果是"下拉能选、规划层不认识 → 静默落回 auto"，
+# 用户选 WebP 却拿到 PNG，界面上看不出任何异常。
+# 现在 VALID_FORMATS 直接引用这里；界面的下拉文案则经
+# batch_planner.FORMAT_ALIASES 映射回内部标识 ——
+# 新增格式时只要补一条别名，就不会出现"能选但不认识"。
+#
+# 不含 gif：动图输出需要逐帧渲染，本工具是静态管线；
+# 但 .gif **输入**仍然支持（自动模式下按首帧导出同名单帧 GIF）。
+EXPORT_FORMATS = ("auto", "png", "jpeg", "webp", "tiff", "heic", "pdf")
 
 # 九宫格位置的规范写法（垂直分量只有 top / middle / bottom）
 DEFAULT_POSITION = "bottom-right"
@@ -230,7 +274,7 @@ class WatermarkConfig:
 
     # ---- 输出参数 ----
     output_dir: str = ""  # 空=自动(源目录下 watermarked_output/)
-    output_format: str = "auto"  # "auto" | "png" | "jpeg" | "pdf"
+    output_format: str = "auto"  # 取值见 EXPORT_FORMATS
     jpeg_quality: int = DEFAULT_JPEG_QUALITY  # JPEG 质量 60-100
     filename_template: str = DEFAULT_FILENAME_TEMPLATE
     on_conflict: str = CONFLICT_RENAME  # 同名输出文件的处理策略

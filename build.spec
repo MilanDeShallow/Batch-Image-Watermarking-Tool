@@ -68,6 +68,11 @@ a = Analysis(
         'reportlab.lib.utils',
         'pypdf',
         'pypdfium2',
+        # HEIC/HEIF 支持：模块在这里显式列出，libheif / libstdc++ 两个 dll
+        # 由 hooks/hook-pillow_heif.py 负责收集（dll 不在包目录里，
+        # collect_dynamic_libs('pillow_heif') 扫不到，原因见该 hook 的注释）
+        'pillow_heif',
+        '_pillow_heif',
     ],
     hookspath=['hooks'],
     hooksconfig={},
@@ -106,6 +111,10 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    # 这两个 dll 是 pillow-heif 的解码器本体（由 hooks/hook-pillow_heif.py 收集）。
+    # 不排除的后果：换了装了 UPX 的机器打包时，2~3MB 的 mingw 大 dll 会被压 ——
+    # 压缩失败刷一堆警告，压缩成功也更容易被杀软当成可疑载荷误报，
+    # 而且 UPX 处理 C++ 导入表出过问题。为这点体积冒运行期风险不值得。
+    upx_exclude=['libheif*.dll', 'libstdc++*.dll'],
     name='WatermarkTool',
 )
