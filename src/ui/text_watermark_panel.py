@@ -142,17 +142,8 @@ class TextWatermarkPanel(ctk.CTkFrame):
         )
         self._opacity_slider.pack(side="left", fill="x", expand=True, padx=5)
 
-        # 透明度是最容易误解的控件：滑块值即 alpha（不透明度），
-        # 0 = 完全看不见。浅色底图配白色水印在 100% 时同样会"看不见"，
-        # 因此这里直接给出可见提示，避免反复试滑块
-        ctk.CTkLabel(
-            self,
-            text="0 = 完全透明（看不见），100 = 完全不透明；浅色底图请选深色水印",
-            text_color=theme.TEXT_MUTED,
-            font=("Microsoft YaHei", 9),
-            justify="left",
-            wraplength=260,
-        ).pack(anchor="w", padx=12, pady=(0, 2))
+        # 滑块值即 alpha（不透明度），0 = 完全看不见；
+        # 这一行不再加说明文字 —— 控件语义已由标签"不透明度"表达，多余提示只会占版面
 
         # ---- 平铺模式 ----
         self._tile_var = ctk.BooleanVar(value=False)

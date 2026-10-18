@@ -88,10 +88,21 @@ VIDEO_MODE_FROM_LABEL = {label: mode for mode, label in VIDEO_MODE_LABELS.items(
 HEIC_SLOW_HINT = "HEIC 编码较慢"
 
 # 各区域最小尺寸
-MIN_LEFT = 180
+MIN_LEFT = 330      # 由最宽的固定内容决定：拖拽提示文字 reqwidth=298 + 两侧各 12 边距 = 322，
+                    # 再留 8px 余量。低于它提示语会被截断——"拖窄就显示不全"就是这个；
+                    # 按钮排在 383 以上走 1×4、以下自动折成 2×2（见 _layout_file_buttons）
+MAX_LEFT = 430      # 上限：窗口拉宽时左栏不再跟着涨，把空间让给预览
 MIN_CENTER = 300
 MIN_RIGHT = 260
+MAX_RIGHT = 480     # 同上：右栏最宽到这儿，再宽就把预览挤瘦了
 MIN_BOTTOM = 40
+
+# 默认比例（用户给的参考：最大化时 左 16% / 中 65% / 右 19%）
+DEFAULT_LEFT_RATIO = 0.16
+DEFAULT_CENTER_RATIO = 0.65
+# 布局文件版本：v1 存的是旧口径（左 0.24 / 中 0.43），v2 起换成上面这组，
+# 读到旧文件时丢掉比例、保留窗口几何 —— 否则用户升级后仍被旧比例困住
+LAYOUT_VERSION = 2
 
 # 底部栏的设计高度（逻辑像素）—— 两行控件：输出目录那行 + 同名策略/质量/开始处理那行。
 # 它只是"设计值"：真正的最小高度取控件算出的请求高度（随 DPI 缩放变化），
@@ -427,7 +438,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
         paned_bg = theme.BG
         self._vpaned = tk.PanedWindow(
             self, orient="vertical",
-            sashwidth=8, sashrelief="flat",
+            sashwidth=6, sashrelief="flat",
             bg=paned_bg, bd=0,
         )
         self._vpaned.pack(fill="both", expand=True, padx=12, pady=(0, 8))
@@ -435,7 +446,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
         # ====== 水平 PanedWindow：左 | 中 | 右 ======
         self._hpaned = tk.PanedWindow(
             self._vpaned, orient="horizontal",
-            sashwidth=8, sashrelief="flat",
+            sashwidth=6, sashrelief="flat",
             bg=paned_bg, bd=0,
         )
         self._vpaned.add(self._hpaned, minsize=200, stretch="always")
@@ -464,21 +475,21 @@ class AppWindow(ctk.CTk, DnDWrapper):
         # 四个小按钮等宽（58×28）：宽度不一致时整排看着是"没对齐"而不是"有主次"。
         # 都是中性色 —— 「删除选中」只是把文件移出列表、不删磁盘文件，不该用危险色
         self._clear_btn = ctk.CTkButton(
-            btn_frame, text="清空", width=58, height=28, command=self._on_clear_files
+            btn_frame, text="清空", width=48, height=28, command=self._on_clear_files
         )
-        self._clear_btn.pack(side="left", padx=2)
         self._remove_btn = ctk.CTkButton(
-            btn_frame, text="删除选中", width=58, height=28, command=self._on_remove_selected
+            btn_frame, text="删除选中", width=48, height=28, command=self._on_remove_selected
         )
-        self._remove_btn.pack(side="left", padx=2)
         self._up_btn = ctk.CTkButton(
-            btn_frame, text="上移", width=58, height=28, command=self._on_move_up
+            btn_frame, text="上移", width=48, height=28, command=self._on_move_up
         )
-        self._up_btn.pack(side="left", padx=2)
         self._down_btn = ctk.CTkButton(
-            btn_frame, text="下移", width=58, height=28, command=self._on_move_down
+            btn_frame, text="下移", width=48, height=28, command=self._on_move_down
         )
-        self._down_btn.pack(side="left", padx=2)
+        # 排布不在这里写死：一行四个需要 383px，面板窄了就折成两行两列（见 _layout_file_buttons）
+        self._file_btn_order = (self._clear_btn, self._remove_btn, self._up_btn, self._down_btn)
+        self._file_btn_cols = 0
+        btn_frame.bind("<Configure>", self._layout_file_buttons)
 
         self._file_list = FileList(
             left_frame, on_selection_changed=self._on_file_selected,
@@ -499,7 +510,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
             on_page_changed=self._on_preview_page_changed,
             on_watermark_moved=self._on_watermark_moved,
         )
-        self._preview_canvas.pack(fill="both", expand=True, padx=8, pady=8)
+        self._preview_canvas.pack(fill="both", expand=True, padx=4, pady=8)
 
         # ---- 右栏：水印设置区 ----
         right_frame = ctk.CTkFrame(self._hpaned)
@@ -977,9 +988,41 @@ class AppWindow(ctk.CTk, DnDWrapper):
         if not isinstance(layout, dict):
             layout = {}
 
+        if int(layout.get("v", 1)) < LAYOUT_VERSION:
+            # 旧口径的比例（左 0.24 / 中 0.43）留着会白白多占左栏一百多像素；
+            # 窗口几何照旧保留，只把比例丢掉、改用本版默认值
+            layout.pop("left_ratio", None)
+            layout.pop("center_ratio", None)
+
         # 300ms：等窗口真正完成首次几何计算，此时 winfo_height 才有意义，
         # 否则会按 1px 的总高度去算比例。
         self.after(300, lambda: self._apply_layout(layout))
+
+    def _layout_file_buttons(self, event=None) -> None:
+        """左栏文件按钮自适应：够宽 1×4，变窄折成 2×2。
+
+        实测四个按钮的真实宽度是 87 + 106 + 87 + 87 = 367（CTkButton 的 width
+        只是文字区，控件实际更宽），加间距 16 需要 383 才放得下；硬挤会把
+        「上移 / 下移」压成几十像素甚至挤出面板 —— 用户说的"拖窄就显示不全"。
+        让它跟着面板宽度改排布，比把 MIN_LEFT 抬到 407 更省地方。
+        """
+        frame = self._clear_btn.master
+        width = event.width if event is not None else frame.winfo_width()
+        # 阈值按按钮真实需求算，别写死：文字长度一变（比如改按钮文案）自动跟着走
+        need = sum(b.winfo_reqwidth() for b in self._file_btn_order) + 4 * len(self._file_btn_order)
+        cols = 4 if width >= need else 2
+        if cols == self._file_btn_cols:
+            return
+        self._file_btn_cols = cols
+        for c in range(4):
+            if cols == 2 and c < 2:
+                # uniform：两列等宽，否则「删除选中」会把右列撑宽，一排下去看着是歪的
+                frame.grid_columnconfigure(c, weight=1, uniform="filebtns")
+            else:
+                frame.grid_columnconfigure(c, weight=0, uniform="")
+        sticky = "w" if cols == 4 else "ew"
+        for index, btn in enumerate(self._file_btn_order):
+            btn.grid(row=index // cols, column=index % cols, sticky=sticky, padx=2, pady=2)
 
     def _apply_layout(self, layout: dict):
         """按比例设置分隔线位置"""
@@ -991,20 +1034,23 @@ class AppWindow(ctk.CTk, DnDWrapper):
             if total_h <= 1:
                 total_h = self.WINDOW_HEIGHT
 
-            # 水平：左栏比例 + 中栏比例（右栏自动占余）
-            # 水平：左栏比例 + 中栏比例（右栏自动占余）
-            # 左栏默认 0.24：文件列表一行要放"序号/缩略图/文件名/大小/专属标记"，
-            # 0.20 时固定列就把行占满，文件名只剩两三个字（实测 324px 行宽下）
-            left_ratio = layout.get("left_ratio", 0.24)
-            center_ratio = layout.get("center_ratio", 0.43)
+            # 水平：两侧封顶、中间吃掉剩余。
+            # 单纯按比例分有个毛病：窗口一最大化，左栏按比例会涨到 600+，
+            # 预览反而被挤（用户反馈"一个区域占太多、比例不对"）。
+            # 现在左/右各有一个像素上限，超大窗口下比例就稳在 16% / 19% 附近。
+            left_ratio = layout.get("left_ratio", DEFAULT_LEFT_RATIO)
+            center_ratio = layout.get("center_ratio", DEFAULT_CENTER_RATIO)
+            right_ratio = max(0.05, 1.0 - left_ratio - center_ratio)
+            sash_w = int(self._hpaned.cget("sashwidth"))
 
-            left_w = max(MIN_LEFT, int(total_w * left_ratio))
-            center_w = max(MIN_CENTER, int(total_w * center_ratio))
+            left_w = min(max(int(total_w * left_ratio), MIN_LEFT), MAX_LEFT)
+            right_w = min(max(int(total_w * right_ratio), MIN_RIGHT), MAX_RIGHT)
+            center_w = max(MIN_CENTER, total_w - left_w - right_w - 2 * sash_w)
 
             if len(self._hpaned.panes()) >= 2:
                 self._hpaned.sash_place(0, left_w, 0)
             if len(self._hpaned.panes()) >= 3:
-                self._hpaned.sash_place(1, left_w + center_w, 0)
+                self._hpaned.sash_place(1, left_w + sash_w + center_w, 0)
 
             # 垂直：底部栏比例。
             # 下限取「底部栏的请求高度 + 分隔条宽度」——请求高度由控件自己算出，
@@ -1047,6 +1093,7 @@ class AppWindow(ctk.CTk, DnDWrapper):
             # 不该因为"面板还没量出宽度"就一起丢掉。
             # 旧实现是直接 return，于是"只切主题、不动面板就关窗"时选择留不下来。
             if total_w > 1 and total_h > 1:
+                layout["v"] = LAYOUT_VERSION
                 # 注意单位：win_width/height 是物理像素，win_x/y 是 Tk 单位
                 # （Tk 在 Windows 上这两组 winfo 单位不同，见 physical_to_tk_size）。
                 # 恢复端按同样的口径解读，改这里要同步改 _restore_window_geometry

@@ -37,7 +37,13 @@ pdfium_binaries = collect_dynamic_libs('pypdfium2')
 # 图标既要嵌进 exe（EXE 的 icon=，决定资源管理器/任务栏显示的图标），
 # 也要留在 _internal 里（运行时 iconbitmap 会去读它 —— 只嵌不进包的话，
 # 开发运行有图标、打包后反而没有）
-all_datas = ctk_datas + dnd_datas + [('assets/app.ico', 'assets')]
+# 字体目录整包带上：水印文字必须用随包字体渲染，否则在没装对应
+# 系统字体的机器上会退化成不支持中文的位图字体（直接变方块）。
+# OFL 许可要求随字体分发许可文本，assets/fonts/ 里已一并放入。
+all_datas = ctk_datas + dnd_datas + [
+    ('assets/app.ico', 'assets'),
+    ('assets/fonts', 'assets/fonts'),
+]
 
 # ---- 视频支持的 ffmpeg 不在这里打包 ----
 # 试过用 datas 传 vendor/ffmpeg：PyInstaller 会顺着 ffmpeg.exe 的导入表

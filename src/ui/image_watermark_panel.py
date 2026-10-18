@@ -30,12 +30,67 @@ class ImageWatermarkPanel(ctk.CTkFrame):
 
     # ==================== UI 构建 ====================
 
+    def _source_is_qr(self) -> bool:
+        try:
+            return self.source_seg.get() == "二维码"
+        except Exception:
+            return False
+
+    def _on_source_change(self, value: str) -> None:
+        """在两个水印源之间切换：同一行只显示一个，避免面板继续变高。"""
+        if value == "二维码":
+            self.logo_frame.grid_remove()
+            self.logo_preview_label.grid_remove()
+            self.qr_frame.grid()
+            self.qr_entry.focus_set()
+        else:
+            self.qr_frame.grid_remove()
+            self.logo_frame.grid()
+            self.logo_preview_label.grid()
+        # 二维码不需要"选择 Logo"那几个按钮，但位置/透明度控件保持可用
+
     def _build_ui(self):
         grid_opts = {"sticky": "ew", "padx": 8, "pady": (6, 2)}
 
+        # --- 水印源切换：Logo 图片 / 二维码 ---
+        # 两者共用后面所有的位置、透明度、平铺、间距参数，所以做成切换而不是
+        # 并排两套控件 —— 并排会让面板再高一截，而这一栏本来就挤。
+        source_frame = ctk.CTkFrame(self, fg_color="transparent")
+        source_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 2))
+        source_frame.columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(source_frame, text="水印源:", width=70).grid(
+            row=0, column=0, sticky="w"
+        )
+        self.source_seg = ctk.CTkSegmentedButton(
+            source_frame, values=["Logo 图片", "二维码"],
+            command=self._on_source_change,
+        )
+        self.source_seg.set("Logo 图片")
+        self.source_seg.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        # --- 二维码内容（默认隐藏） ---
+        self.qr_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.qr_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
+        self.qr_frame.columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.qr_frame, text="内容:", width=70).grid(
+            row=0, column=0, sticky="w"
+        )
+        self.qr_entry = ctk.CTkEntry(
+            self.qr_frame, placeholder_text="网址 / 微信号 / 图片编号"
+        )
+        self.qr_entry.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ctk.CTkLabel(
+            self.qr_frame,
+            text="扫码可读；白底为保证识别率，不随透明度变透明",
+            text_color=theme.TEXT_MUTED, anchor="w",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        self.qr_frame.grid_remove()
+
         # --- Logo 选择区 ---
-        logo_frame = ctk.CTkFrame(self, fg_color="transparent")
-        logo_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 6))
+        self.logo_frame = ctk.CTkFrame(self, fg_color="transparent")
+        logo_frame = self.logo_frame
+        logo_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
         logo_frame.columnconfigure(1, weight=1)
 
         ctk.CTkLabel(logo_frame, text="Logo 图片:", width=70).grid(
@@ -66,7 +121,7 @@ class ImageWatermarkPanel(ctk.CTkFrame):
             self, text="", width=120, height=80,
             fg_color=theme.SURFACE_ALT, corner_radius=theme.RADIUS_INPUT
         )
-        self.logo_preview_label.grid(row=1, column=0, **grid_opts)
+        self.logo_preview_label.grid(row=2, column=0, **grid_opts)
 
         # --- 分隔线 ---
         # width 与 height 都要给：CTkFrame 默认 200×200（逻辑像素），
@@ -74,7 +129,7 @@ class ImageWatermarkPanel(ctk.CTkFrame):
         sep = ctk.CTkFrame(
             self, width=1, height=1, corner_radius=0, fg_color=theme.BORDER
         )
-        sep.grid(row=2, column=0, sticky="ew", padx=12, pady=8)
+        sep.grid(row=3, column=0, sticky="ew", padx=12, pady=8)
 
         # --- 缩放比例 ---
         row = 3
@@ -465,7 +520,10 @@ class ImageWatermarkPanel(ctk.CTkFrame):
         pos_str = self._POS_NAMES[pos_idx] if 0 <= pos_idx < 9 else "bottom-right"
 
         data = {
-            "watermark_type": "image",
+            # 二维码与 Logo 共用同一套位置/透明度/平铺参数，
+            # 差别只在"贴什么"，所以类型在这里二选一
+            "watermark_type": "qr" if self._source_is_qr() else "image",
+            "qr_content": self.qr_entry.get().strip() if self._source_is_qr() else "",
             "logo_path": self.logo_path or "",
             "scale_ratio": int(self.scale_slider.get()) / 100.0,
             "logo_opacity": int(self.opacity_slider.get()),

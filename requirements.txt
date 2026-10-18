@@ -8,6 +8,9 @@ pillow==12.3.0
 pillow-heif==1.8.1
 # SVG 光栅化（纯 Rust 静态链接，单个 pyd，无额外 dll）
 resvg-py==0.5.0
+
+# 二维码水印（纯 Python，无二进制依赖）
+qrcode==8.2
 customtkinter==6.0.0
 tkinterdnd2==0.6.2
 

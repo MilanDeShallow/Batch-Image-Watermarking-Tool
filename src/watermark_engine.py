@@ -26,11 +26,14 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from src.config import (
+    BUNDLED_FONTS,
+    DEFAULT_FONT_FAMILY,
     DEFAULT_POSITION,
     HEIF_AVAILABLE,
     MAX_IMAGE_PIXELS,
     SVG_MAX_ZOOM,
     SVG_RASTER_LONG_EDGE,
+    asset_path,
     normalize_position,
 )
 from src.logger import log_warning
@@ -124,14 +127,28 @@ def scaled_px(value, scale: float = 1.0) -> int:
 # 字体加载 — 四级回退链
 # ============================================================
 
+def bundled_font_path(family: str | None) -> Optional[str]:
+    """内置字体路径；family 不认识或文件缺失时返回 None（交给下一级回退）。"""
+    entry = BUNDLED_FONTS.get(family or DEFAULT_FONT_FAMILY)
+    if not entry:
+        return None
+    path = asset_path("fonts", entry[0])
+    return path if os.path.isfile(path) else None
+
+
+# 回退顺序刻意把「内置字体」排在系统字体之前：
+# 内置字体随包分发、版本固定，任何机器上渲染出的字形与字距完全一致；
+# 系统字体只作兜底（比如某个精简发行版里没有内置文件）。
 _FONT_FALLBACK_CHAIN = [
-    lambda p: p if p else None,                    # 1. 用户指定路径
-    lambda _: r"C:\Windows\Fonts\msyh.ttc",         # 2. 微软雅黑
-    lambda _: r"C:\Windows\Fonts\simhei.ttf",       # 3. 黑体
+    lambda p, _f: p if p else None,                     # 1. 用户指定路径
+    lambda _p, f: bundled_font_path(f),                 # 2. 随包内置（OFL，跨机器一致）
+    lambda _p, _f: r"C:\Windows\Fonts\msyh.ttc",        # 3. 系统微软雅黑
+    lambda _p, _f: r"C:\Windows\Fonts\simhei.ttf",      # 4. 系统黑体
 ]
 
 
-def load_font_with_fallback(user_path: str | None, size: int) -> tuple:
+def load_font_with_fallback(user_path: str | None, size: int,
+                            family: str | None = None) -> tuple:
     """
     加载字体文件，按优先级逐级回退。
 
@@ -140,7 +157,7 @@ def load_font_with_fallback(user_path: str | None, size: int) -> tuple:
     - is_warning: True 表示回退到了默认字体（不支持中文字符），调用方应提示用户
     """
     for getter in _FONT_FALLBACK_CHAIN:
-        path = getter(user_path)
+        path = getter(user_path, family)
         if path and os.path.isfile(path):
             try:
                 return ImageFont.truetype(path, size), False
@@ -307,7 +324,46 @@ def safe_open_image(path: str) -> Image.Image:
             log_warning(f"{name}：CMYK 将转换为 RGB（色彩空间转换不可逆）")
         detached = detached.convert("RGB")
 
+    # IPTC 原始段在此刻抓下来（只在 JPEG 上有）。
+    # 不走 Pillow 的 info["photoshop"]：那个是解析后的 dict，重新组装
+    # 要自己处理 8BIM 头、名称、奇偶补位，任何一处写错都会让 Photoshop、
+    # Bridge 这类读取方认不出来。直接持有原始字节、原样写回，等于搬运。
+    if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg"):
+        app13 = _extract_app13(path)
+        if app13:
+            detached.info["iptc_app13"] = app13
+
     return detached
+
+
+def _extract_app13(path: str) -> Optional[bytes]:
+    """
+    从 JPEG 里取出 Photoshop 的 APP13 段体（含 "Photoshop 3.0\\0" 头）。
+
+    只读段头、不碰像素：SOS（扫描数据）之前就停下，大图上开销可以忽略。
+    返回 None 表示这个文件没有 IPTC。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(256 * 1024)  # 段都在文件前部，读 256KB 足够
+    except OSError:
+        return None
+    if not head.startswith(b"\xff\xd8"):
+        return None
+    i = 2
+    while i + 4 <= len(head):
+        if head[i] != 0xFF:
+            break
+        marker = head[i + 1]
+        if marker in (0xDA, 0xD9):  # SOS / EOI：后面是图像数据，不用再找
+            break
+        seg_len = int.from_bytes(head[i + 2:i + 4], "big")
+        if seg_len < 2:
+            break
+        if marker == 0xED and head[i + 4:i + 18] == b"Photoshop 3.0\x00":
+            return head[i + 4:i + 2 + seg_len]
+        i += 2 + seg_len
+    return None
 
 
 # ============================================================
@@ -486,7 +542,9 @@ def build_text_sprite(cfg, base_size: tuple[int, int], scale: float = 1.0):
     # 显示出的字号比导出大（ratio 很小时能差 3 倍以上）
     font_floor = max(1, scaled_px(MIN_FONT_PX, scale))
     font_size = max(font_floor, int(min(base_size) * cfg.font_ratio))
-    font, _is_warning = load_font_with_fallback(cfg.font_path or None, font_size)
+    font, _is_warning = load_font_with_fallback(
+        cfg.font_path or None, font_size, getattr(cfg, "font_family", None)
+    )
 
     # 不透明度只有一个来源：opacity。这里取派生出的 alpha，
     # 而不是直接用 cfg.color_rgba —— 后者可能与滑块值不一致
@@ -825,9 +883,75 @@ def add_image_watermark(base: Image.Image, cfg, scale: float = 1.0) -> Image.Ima
     return Image.alpha_composite(base, overlay)
 
 
-# ============================================================
-# 统一入口
-# ============================================================
+def make_qr_sprite(content: str, cfg, base_size: tuple, scale: float = 1.0):
+    """
+    生成二维码精灵（RGBA），尺寸与位置参数复用 Logo 那一套。
+
+    为什么留白底而不是透明：二维码靠黑白对比识别，压在深色或花哨的
+    画面上会直接扫不出来。白底 + 深色模块是通用做法，宁可多一块白，
+    也不要一个扫不出来的码。
+
+    为什么用 ERROR_CORRECT_M：H 级容错会让码面更密（同样尺寸下模块更小，
+    在缩略图里更难扫），M 级约 15% 容错，配合白边足够应对压缩失真。
+    """
+    try:
+        import qrcode
+    except Exception as exc:  # pragma: no cover - 依赖缺失时不该让整批失败
+        log_warning(f"二维码组件不可用，已跳过二维码水印：{exc}")
+        return None
+
+    text = (content or "").strip()
+    if not text:
+        return None
+
+    try:
+        qr = qrcode.QRCode(
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=10,
+            border=2,          # 白边：没有 quiet zone 的码很多扫码器直接不认
+        )
+        qr.add_data(text)
+        qr.make(fit=True)
+        sprite = qr.make_image(fill_color="black", back_color="white").convert("RGBA")
+    except Exception as exc:
+        log_warning(f"二维码生成失败，已跳过：{exc}")
+        return None
+
+    # 尺寸口径与 Logo 一致（相对图片宽度），上限防止糊满整张图
+    target = int(base_size[0] * max(0.03, min(getattr(cfg, "scale_ratio", 0.2), 0.6)))
+    target = max(24, min(target, base_size[0], base_size[1]))
+    if sprite.width != target:
+        # NEAREST：二维码是硬边几何图形，插值会产生灰边、降低识别率
+        sprite = sprite.resize((target, target), Image.NEAREST)
+
+    opacity = int(getattr(cfg, "logo_opacity", 100) or 100)
+    if opacity < 100:
+        alpha = sprite.split()[3].point(lambda v: v * opacity // 100)
+        sprite.putalpha(alpha)
+
+    return sprite
+
+
+def add_qr_watermark(base: Image.Image, cfg, scale: float = 1.0) -> Image.Image:
+    """把二维码按 Logo 的位置/平铺参数贴上去（渲染路径与 Logo 完全一致）。"""
+    sprite = make_qr_sprite(getattr(cfg, "qr_content", ""), cfg, base.size, scale)
+    if sprite is None:
+        return base
+
+    base = base.convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+
+    if getattr(cfg, "logo_tile", False):
+        tile_grid(
+            overlay, sprite,
+            scaled_px(cfg.logo_spacing_x, scale), scaled_px(cfg.logo_spacing_y, scale),
+            getattr(cfg, "logo_stagger", False),
+        )
+    else:
+        x, y = single_watermark_anchor(base.size, sprite.size, cfg, scale, "logo_")
+        overlay.alpha_composite(sprite, (x, y))
+
+    return Image.alpha_composite(base, overlay)
 
 def apply_watermark(img: Image.Image, cfg, scale: float = 1.0) -> Image.Image:
     """
@@ -836,7 +960,8 @@ def apply_watermark(img: Image.Image, cfg, scale: float = 1.0) -> Image.Image:
     支持的类型：
     - "text": 仅文字水印
     - "image": 仅图片水印
-    - "both": 同时应用两种水印（先文字后图片）
+    - "both": 同时应用文字与图片/二维码
+    - "qr": 仅二维码水印（内容来自 cfg.qr_content）
 
     :param scale: 本次渲染分辨率 / 参考分辨率（导出分辨率）。
                   预览在缩小图上渲染时传入它，绝对像素类参数（间距、边距、
@@ -849,11 +974,23 @@ def apply_watermark(img: Image.Image, cfg, scale: float = 1.0) -> Image.Image:
     if cfg.watermark_type in ("text", "both"):
         result = add_text_watermark(result, cfg, scale)
 
+    # 二维码水印：位置/平铺/透明度全部复用 Logo 的参数与算法
+    if cfg.watermark_type == "qr" or getattr(cfg, "qr_content", ""):
+        if getattr(cfg, "qr_content", "") and cfg.watermark_type in ("qr", "both"):
+            result = add_qr_watermark(result, cfg, scale)
+
     # 应用图片水印
     if cfg.watermark_type in ("image", "both"):
         if cfg.logo_path and os.path.isfile(cfg.logo_path):
             result = add_image_watermark(result, cfg, scale)
         # 若 logo_path 不存在且类型为 image，静默跳过（不报错）
+
+    # IPTC 元数据随身携带。合成过程中的每一步都会新建画布，info 字典
+    # 不会自动继承；不显式搬过来的话，摄影师填在 IPTC 里的作者、版权声明
+    # 会在加水印后全部丢失 —— 而加印本来就是为了声明版权，逻辑上自相矛盾。
+    # 这里只搬这一项，其余 EXIF 由 prepare_exif_for_save 单独处理。
+    if img.info.get("iptc_app13"):
+        result.info["iptc_app13"] = img.info["iptc_app13"]
 
     return result
 
@@ -861,6 +998,38 @@ def apply_watermark(img: Image.Image, cfg, scale: float = 1.0) -> Image.Image:
 # ============================================================
 # 智能保存 — 格式转换 + 安全 EXIF
 # ============================================================
+
+def _inject_iptc(jpeg_path: str, photoshop_payload: bytes) -> None:
+    """
+    把 Photoshop 的 IPTC 段（APP13）插回 JPEG。
+
+    `photoshop_payload` 是 Pillow 读图时塞进 img.info["photoshop"] 的
+    原始字节（8BIM 资源块），不含段标记。这里只做三件事：
+    补 FFE D 标记、写长度、插到 SOI 之后。内容原样搬运。
+
+    为什么需要它：Pillow 的 save(exif=...) 只写 APP1（EXIF），而作者、
+    版权声明、关键词这些是 IPTC（APP13），不手工写回就直接消失。
+    """
+    if not photoshop_payload:
+        return
+    try:
+        with open(jpeg_path, "rb") as f:
+            data = f.read()
+        if not data.startswith(b"\xff\xd8"):
+            return  # 不是 JPEG（理论上不会走到这，防御一下）
+        # APP13 段体长度 = 负载 + 2。JPEG 的长度字段把自身那 2 字节也算进去，
+        # 少算就会让读取方截掉最后两个字节（IPTC 尾部被吃掉）。
+        segment = b"\xff\xed" + (len(photoshop_payload) + 2).to_bytes(2, "big") + photoshop_payload
+        if len(segment) - 2 > 0xFFFF:
+            # 单个 JPEG 段的长度字段只有 2 字节，超长就放弃而不是写出坏文件
+            log_warning("IPTC 数据过大，已跳过写入（文件仍正常输出）")
+            return
+        with open(jpeg_path, "wb") as f:
+            f.write(data[:2] + segment + data[2:])
+    except Exception as exc:  # pragma: no cover - 防御性
+        # IPTC 写失败不能让整张图作废：主产物已经保存好了
+        log_warning(f"IPTC 元数据写入失败，已跳过：{exc}")
+
 
 def save_with_format(
     img: Image.Image,
@@ -881,6 +1050,10 @@ def save_with_format(
     """
     ext = os.path.splitext(path)[1].lower()
     safe_exif = prepare_exif_for_save(img)
+
+    # IPTC 必须在这里先取出来：下面 JPEG 分支会把 RGBA 铺到白底上，
+    # 那是新建的画布，info 字典不会跟过去 —— 等到保存完再取就永远是空的。
+    app13 = img.info.get("iptc_app13")
 
     if ext in (".jpg", ".jpeg"):
         # JPEG 不支持 alpha/RGBA → 转 RGB（白底）
@@ -979,6 +1152,13 @@ def save_with_format(
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
     img.save(path, **kwargs)
+
+    # IPTC 只能手工写回：Pillow 的 save(exif=...) 只处理 APP1，
+    # Photoshop 的 IPTC 段（APP13）它既不读也不写。
+    # 做法是保存完成后把原始 APP13 负载原样插回 SOI 之后 ——
+    # 段内容一个字节都不改，等于"搬运"，不存在解析出错的风险。
+    if ext in (".jpg", ".jpeg") and app13:
+        _inject_iptc(path, app13)
 
 
 # 注意：这里曾经还有一份 sanitize_path 与 _PATH_CLEAN_RE，

@@ -307,6 +307,18 @@ def binary_probe(exe: str) -> None:
     check("resvg 光栅化器已随包", bool(svg_pyd),
           svg_pyd[0] if svg_pyd else f"{target}\\resvg_py 下没有 resvg_py*.pyd")
 
+    # 内置字体：漏了不会崩，只会在别人的电脑上把中文渲染成方块
+    print("\n=== 内置字体 ===", flush=True)
+    font_dir = os.path.join(target, "assets", "fonts")
+    for name, label in (
+        ("SourceHanSansSC-Regular.otf", "内置中文字体"),
+        ("OFL-SourceHan.txt", "字体许可文本（OFL 合规要求）"),
+    ):
+        path = os.path.join(font_dir, name)
+        check(f"{label}已随包", os.path.isfile(path),
+              f"{path}  {os.path.getsize(path) // 1024}KB" if os.path.isfile(path)
+              else f"{font_dir} 下没有 {name}")
+
 
 def launch_probe(exe: str, wait: float = 9.0) -> None:
     head("启动探测：exe 能跑起来并存活")

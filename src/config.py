@@ -11,6 +11,8 @@
 
 import json
 import os
+import sys
+import os
 from dataclasses import dataclass, asdict, field
 from typing import Any, Optional
 
@@ -43,6 +45,36 @@ DEFAULT_FILENAME_TEMPLATE = "{original}_watermarked"
 # watermark_engine（渲染引擎）与 resource_budget（内存预算）共用这一个值 ——
 # 以前两处各写一份 300_000_000，改一处忘一处会出现"预警了却没拦住"。
 MAX_IMAGE_PIXELS = 300_000_000
+
+
+def asset_path(*parts: str) -> str:
+    """
+    资源文件路径：源码运行时在项目 assets/，打包后在 PyInstaller 的 _internal。
+
+    __file__ 是 src/config.py：往上一层是 src，再往上是项目根。
+    """
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
+    return os.path.join(base, "assets", *parts)
+
+
+# ============================================================
+# 内置字体（随包分发，不依赖系统）
+# ============================================================
+# 为什么必须自带：系统字体在不同机器上不保证存在（精简版 Windows、
+# 换过主题字体、非中文系统）。一旦退到 Pillow 的默认位图字体，中文会
+# 直接变方块 —— 而用户常常是把成品发给客户之后才发现。
+#
+# 为什么只认 SIL OFL 1.1：该许可证写明授权"不可撤销"（irrevocable），
+# 授权方事后不能改成收费再回头主张侵权。很多国产字体的"商用免费"是
+# 厂商自拟协议，期限与条款都可变更，不适合随商业软件分发。
+# 许可全文见 assets/fonts/OFL-SourceHan.txt（随包提供，OFL 的要求）。
+BUNDLED_FONTS = {
+    "sans": ("SourceHanSansSC-Regular.otf", "思源黑体"),
+    "serif": ("SourceHanSerifSC-Regular.otf", "思源宋体"),
+}
+DEFAULT_FONT_FAMILY = "sans"
 
 # ============================================================
 # 图片解码器注册（HEIC / HEIF）
@@ -248,11 +280,13 @@ class WatermarkConfig:
     """水印全部参数的数据容器"""
 
     # 水印类型
-    watermark_type: str = "text"  # "text" | "image" | "both"
+    watermark_type: str = "text"  # "text" | "image" | "both" | "qr"
+    qr_content: str = ""  # 二维码内容（网址 / 微信号 / 图片编号等），类型为 qr 时使用
 
     # ---- 文字水印参数 ----
     text: str = DEFAULT_TEXT
-    font_path: str = ""  # 空=自动探测系统字体
+    font_path: str = ""  # 用户指定的字体文件，空=按 font_family 取内置字体
+    font_family: str = DEFAULT_FONT_FAMILY  # "sans" | "serif"，见 BUNDLED_FONTS
     font_ratio: float = DEFAULT_FONT_RATIO  # 字号相对图片短边百分比 (1%-20%)
     # color_rgba: 只有前三位（RGB）是输入，第 4 位由 opacity 派生。
     # 只想给颜色时可以直接写 color_rgba=(r, g, b)，不必管 alpha。
